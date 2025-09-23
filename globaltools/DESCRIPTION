@@ -1,0 +1,26 @@
+Package: globaltools
+Title: Global helper functions & other functions for projects
+Version: 0.1.0
+Authors@R: 
+    person("Gianfranco", "Pocobelli", , "g.pocobelli@salk.at", role = c("aut", "cre"))
+Description: Reusable utilities for a reproducible workflow in R & other functions.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports: 
+    dplyr,
+    ggplot2,
+    ggpp,
+    ggpubr,
+    here,
+    magrittr,
+    openxlsx,
+    readr,
+    rlang,
+    stringr,
+    survminer,
+    tibble,
+    tidyr
+Suggests: 
+    survival
