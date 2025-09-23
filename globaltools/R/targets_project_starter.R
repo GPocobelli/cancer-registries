@@ -50,7 +50,7 @@
 #'│            ├── raw/                        # Original data (do not modify)
 #'│            └── cleaned/                    # Processed data ready for analysis
 #'         ├── doc/
-#'         ├── notebooks/
+#'         ├── notebook/
 #'│            └── YYYY-MM-DD_notes.md         # Project notes and observations
 #'         ├── results/
 #'│            ├── YYYY-MM-DD_cleaning/
