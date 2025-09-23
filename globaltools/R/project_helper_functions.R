@@ -78,12 +78,12 @@ create_notebook_wd <- function(topic = "notes") {
   # Defining date, name and path
   today <- format(Sys.Date(), "%Y-%m-%d")
   notebook_name <- paste0(today, "_", topic, ".qmd")
-  notebook_path <- here("notebooks", notebook_name)
+  notebook_path <- here("notebook", notebook_name)
   project_name <- basename(here())
   user = Sys.info()["user"]
 
   # Check if directory exists already
-  if (!dir.exists(here("notebooks"))) dir.create(here("notebooks"), recursive = TRUE)
+  if (!dir.exists(here("notebook"))) dir.create(here("notebook"), recursive = TRUE)
 
   if (!file.exists(notebook_path)) {
 
@@ -254,4 +254,5 @@ read_latest_cleaned_data <- function(path = file.path("data", "cleaned"), detail
 
   return(data_list)
 }
+
 
