@@ -1,0 +1,1370 @@
+---
+title: "MammaCA Sarcopenia Analysis"
+format: docx
+editor: visual
+---
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
+library(adjustedCurves)
+library(survival)
+library(survminer)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(conflicted)
+library(targets)
+library(tarchetypes)
+library(globaltools)
+library(here)
+library(timereg)
+library(gtsummary)
+library(broom)
+library(rstpm2)
+library(readxl)
+library(ggrain)
+library(patchwork)
+
+
+conflicted::conflict_prefer("filter", "dplyr")
+conflicted::conflict_prefer("select", "dplyr")
+```
+
+## Methods
+
+<br>
+
+### Missing Values
+
+3 Patients (1%) had incomplete date-of-dead date, therefore we imputed day 15 for missing day-values.
+
+<br>
+
+### Statistical Analysis
+
+All statistical analyses were performed retrospectively. Kaplan-Meier method was used to calculate the PFS and OS. The global effect of each variable was evaluated using the likelihood ratio test and the differences between the cohorts were compared using the log-rank test. In case of multiple comparisons, pairwise log-rank tests were conducted. Effect sizes (hazard ratios (HR)) were estimated by applying a Cox proportional hazards regression model. The assumption of hazards was verified by Schoenfeld residuals \[1\].
+
+Statistics done with R version 4.5.1 \[2\], and packages: survival \[3\], survminer \[4\] and adjustedCurves \[5\].
+
+<br>
+
+\[1\] P. Grambsch and T. Therneau (1994), Proportional hazards tests and diagnostics based on weighted residuals. Biometrika, 81, 515-26. https://doi.org/10.1093/biomet/81.3.515
+
+\[2\] R_Core_Team. R: A Language and Environment for Statistical Computing. R Foundation for Statistical Computing, Vienna, Austria. 2024.
+
+\[3\] Therneau T (2024). *A Package for Survival Analysis in R*. R package version 3.8-3, [https://CRAN.R-project.org/package=survival](https://cran.r-project.org/package=survival).
+
+\[4\] Kassambara AKMBP. survminer: Drawing Survival Curves using 'ggplot2'\_. R package version 0.5.0,. 2024;  \<[https://CRAN.R-project.org/package=survminer](#0)\>.
+
+\[5\] Denz R, Klaaßen-Mielke R, Timmesfeld N. A comparison of different methods to adjust survival curves for confounders. Stat Med. 2023 May 10;42(10):1461-1479. doi: 10.1002/sim.9681. Epub 2023 Feb 7. Erratum in: Stat Med. 2025 May;44(10-12):e70087. doi: 10.1002/sim.70087. PMID: 36748630.
+
+<br>
+
+## Data Preparation
+
+```{r}
+#| warning: false
+#| fig-height: 6
+#| echo: false
+#| message: false
+
+df <- readxl::read_xlsx("M:/Projects/Forschungstrimester_2025/Sarcopenia/ESMO Breast 2025 - DEF.xlsx")
+
+
+
+df_clean <- df %>%
+  mutate(
+    # Event definieren
+    OS_event = case_when(
+      Alive == 1 ~ 0,
+      `Lost to FU` == 1 ~ 0,
+      TRUE ~ 1
+    ),
+    
+    BMI_cat = case_when(BMI < 18.5 ~ "<18.5",
+                        BMI >= 18.5 & BMI <= 24.9 ~ "18.5-24.9",
+                        BMI >= 25 & BMI <= 29.9 ~ "25-29.9",
+                        BMI >= 30 ~ ">=30",
+                        TRUE ~ NA_character_),
+    
+    ki_67_cat = case_when(`Ki-67` < 20 ~ "<20", 
+                          `Ki-67` >= 20 ~ ">=20",
+                          TRUE ~ NA_character_),
+    
+    num_met_sites = case_when(
+      `Number of metastatic sites` %in% c(0, 1, 2) ~ "1",
+            `Number of metastatic sites` %in% c(2, 3) ~ "2-3",
+      `Number of metastatic sites` %in% c(4, 5, 6) ~ ">3",
+      TRUE ~ NA_character_
+    ),
+    num_met_sites = factor(num_met_sites, levels = c("1", "2-3", ">3")),
+    
+    `1st line HR+` = case_when(`1st line HR+` %in% c(0, 2) ~ 0,
+                               `1st line HR+` %in% c(1) ~ 1,
+                               `1st line HR+` %in% c(3) ~ 2,
+                               TRUE ~ NA_integer_),
+    
+    mBC_diagnosis_date = case_when(
+      str_detect(`mBC diagnosis`, "^\\d{2}\\.\\d{2}\\.\\d{4}$") ~ 
+        as.Date(`mBC diagnosis`, format = "%d.%m.%Y"),
+      
+      str_detect(`mBC diagnosis`, "^\\d{5}$") ~ 
+        as.Date(as.numeric(`mBC diagnosis`), origin = "1899-12-30"),
+      
+      TRUE ~ as.Date(NA)
+    ),
+    
+    OS_time = calc_time(`Date of death or Lost to FU or data cut off  31.12.2025`, mBC_diagnosis_date),
+    
+    DFI_combined = case_when(
+      `De novo` == 1 ~ "de_novo",
+      `De novo` == 0 & DFI == 0 ~ "DFI_<=24",
+      `De novo` == 0 & DFI == 1 ~ "DFI_>24",
+      TRUE ~ NA_character_
+    ),
+     Menopausal_status = case_when(
+      `Menopausal status` %in% c(0, 1) ~ "pre_peri",
+      `Menopausal status` == 2 ~ "post",
+      `Menopausal status` == 3 ~ "unknown",
+      TRUE ~ NA_character_
+    ),
+    Menopausal_status = factor(Menopausal_status),
+    DFI_combined = factor(DFI_combined,
+                          levels = c("de_novo", "DFI_<=24", "DFI_>24")),
+    Sarcopenia = factor(Sarcopenia),
+    `De novo` = factor(`De novo`),
+    `Visceral disease` = factor(`Visceral disease`),
+    `Brain mets` = factor(`Brain mets`),
+    `Menopausal status` = factor(`Menopausal status`),
+    `1st line HR+` = factor(`1st line HR+`),
+    Grading = factor(Grading, ordered = TRUE),
+  
+    PFS_time = calc_time(`date of PD`, mBC_diagnosis_date),
+    
+    PFS_event = case_when(
+      is.na(`date of PD`) ~ 0L,
+      is.na(`Date of death or Lost to FU or data cut off  31.12.2025`) ~ NA_integer_,
+      `date of PD` < `Date of death or Lost to FU or data cut off  31.12.2025` ~ 1L,
+      `date of PD` >= `Date of death or Lost to FU or data cut off  31.12.2025` ~ 0L
+    )
+    )
+
+
+
+```
+
+<br>
+
+## Descriptive Data
+
+```{r}
+#| warning: false
+#| fig-height: 6
+#| echo: false
+#| message: false
+
+
+tbl <- df_clean %>% 
+  select(
+    Age, Gender, Menopausal_status, BMI, BMI_cat, `Biopsy origin`, Histology, Grading, 
+    ki_67_cat, `De novo`, `Visceral disease`, `Bone only`, `Brain mets`, 
+    num_met_sites, `1st line HR+`, Alive
+  ) %>%
+  tbl_summary(
+    statistic = list(
+      all_continuous() ~ "{median} ({p25}, {p75})",   # Median (Q1, Q3)      
+      all_categorical() ~ "{n} ({p}%)"                    # Standard: n (%) für kategorial
+    ),
+    digits = list(
+      all_continuous() ~ 1,                               # Mittelwert & SD auf 1 Nachkommastelle
+      all_categorical() ~ c(0,1)                          # n ohne Dezimal, Prozent mit 1 Nachkommastelle
+    )
+  )
+
+ft <- as_flex_table(tbl)
+doc <- read_docx()
+doc <- body_add_flextable(doc, value = ft)
+print(doc, target = "Tabelle_Summary.docx")
+
+```
+
+## OS
+
+```{r}
+#| warning: false
+#| echo: false
+#| message: false
+#| fig-height: 6
+#| fig-width: 10
+
+surv <- Surv(time = df_clean$OS_time, event = df_clean$OS_event)
+fit <- survfit(surv ~ Sarcopenia, data = df_clean) 
+
+
+
+
+p1 <- ggplot(df_clean, mapping = aes(y = BMI, x = as.factor(Sarcopenia))) +
+  geom_rain(point.args.pos = rlang::list2(position = position_jitter(width = 0.04, 
+                                                                     height = 0)),
+            point.args = rlang::list2(alpha = 0.5),
+            line.args = rlang::list2(alpha = 0.1, color = "#5B9BD5"),
+            line.args.pos = rlang::list2(position = position_jitter(width = 0.05, 
+                                                                    height = 0, 
+                                                                    seed = 42)),  
+            boxplot.args = rlang::list2(outlier.shape = NA, fill = "#5B9BD5"),
+            boxplot.args.pos = rlang::list2(width = 0.07, 
+                                            position = position_nudge(x = 0.15)),  
+            violin.args = rlang::list2(fill = "#5B9BD5", alpha = 0.3), 
+            violin.args.pos = rlang::list2(side = "r", width = 0.7, 
+                                           position = position_nudge(x = 0.2))
+  ) +
+stat_summary(fun = "mean", 
+             geom = "point", 
+             shape = 19, 
+             size = 2, 
+             color = "#5B9BD5", 
+             position = position_nudge(x = 0.08)) +  
+  stat_summary(fun.data = "mean_sdl", geom = "errorbar", width = 0.05, color = "#5B9BD5", position = position_nudge(x = 0.08)) +  
+  ylim(0, 50) +
+  xlab("Sarcopenia") +
+  scale_x_discrete(labels = c("0" = "No", "1" = "Yes")) +
+  theme_pubr() +
+  labs_pubr()
+
+
+
+
+p2 <- ggplot(df_clean, mapping = aes(y = `SMI (cm2/m2)`, x = as.factor(`De novo`))) +
+  geom_rain(point.args.pos = rlang::list2(position = position_jitter(width = 0.04, 
+                                                                     height = 0)),
+            point.args = rlang::list2(alpha = 0.5),
+            line.args = rlang::list2(alpha = 0.1, color = "#5B9BD5"),
+            line.args.pos = rlang::list2(position = position_jitter(width = 0.05, 
+                                                                    height = 0, 
+                                                                    seed = 42)),  
+            boxplot.args = rlang::list2(outlier.shape = NA, fill = "#5B9BD5"),
+            boxplot.args.pos = rlang::list2(width = 0.07, 
+                                            position = position_nudge(x = 0.15)),  
+            violin.args = rlang::list2(fill = "#5B9BD5", alpha = 0.3), 
+            violin.args.pos = rlang::list2(side = "r", width = 0.7, 
+                                           position = position_nudge(x = 0.2))
+  ) +
+stat_summary(fun = "mean", 
+             geom = "point", 
+             shape = 19, 
+             size = 2, 
+             color = "#5B9BD5", 
+             position = position_nudge(x = 0.08)) +  
+  stat_summary(fun.data = "mean_sdl", geom = "errorbar", width = 0.05, color = "#5B9BD5", position = position_nudge(x = 0.08)) +  
+  ylim(0, 70) +
+  xlab("DE NOVO") +
+  ylab(expression(SMI~(cm^2/m^2))) +
+  scale_x_discrete(labels = c("0" = "No", "1" = "Yes")) +
+  theme_pubr() +
+  labs_pubr()
+
+
+
+# Assign the plot objects to new variables
+p1_plot <- p1
+p2_plot <- p2
+
+# Combine the plots using patchwork
+design <- c(
+  patchwork::area(1, 2, 1, 2),
+  patchwork::area(2, 1, 2, 1)
+)
+
+final_plot <- p1_plot + p2_plot +
+  plot_layout(ncol = 2, widths = c(1, 1)) & 
+  theme(plot.margin = unit(c(0.6, 0.6, 0.6, 0.6), "cm"))
+
+# Save the final combined plot
+# ggsave("SMI_plot.png", plot = final_plot, dpi = 600, width = 5, height = 5)
+final_plot
+
+
+
+
+
+```
+
+<br>
+
+\newpage
+
+## Cox Table + Forest Plot
+
+```{r}
+#| fig-height: 8
+#| fig-width: 10
+#| echo: false
+#| warning: false
+#| message: false
+
+
+df_model <- df_clean %>%
+  rename(
+    n_met_sites = num_met_sites,
+    firstline_hr = `1st line HR+`
+  )
+
+
+df_plot <- df_model %>%
+  as.data.frame() %>%
+  mutate(
+    # Variablen mit sauberen Labels für den Plot
+    
+    firstline_hr = factor(
+      firstline_hr,
+      levels = c(0, 1, 2),
+      labels = c(
+        "ET mono/target",
+        "ET + CDK4/6i",
+        "Ctx +/- Bev"
+      )
+    ),
+    
+    `Visc. disease` = factor(
+      `Visceral disease`,
+      levels = c(0, 1),
+      labels = c("No", "Yes")
+    ),
+    
+    
+    BMI = factor(BMI_cat,
+                     levels = c("18.5-24.9", "25-29.9", ">=30", "<18.5")),
+    
+    
+    
+    Sarcopenia = factor(
+      Sarcopenia,
+      levels = c(0, 1),
+      labels = c("No", "Yes")
+    ),
+    
+    `DFI & De Novo` = factor(
+      DFI_combined,
+      levels = c("de_novo", "DFI_<=24", "DFI_>24"),
+      labels = c("De novo", "DFI <=24 months", "DFI >24 months")
+    ),
+    `Met. Sites` = n_met_sites,
+    
+    `1st line HR` = firstline_hr
+  )
+
+cox_step_lab <- coxph(
+  Surv(OS_time, OS_event) ~ 
+    Sarcopenia + 
+    BMI +
+    `Age` +
+    `Visc. disease` + 
+    `DFI & De Novo` + 
+    `Met. Sites` + 
+    `1st line HR` ,
+  data = df_plot,
+  model = TRUE,
+  x = TRUE,
+  y = TRUE
+)
+
+
+
+# cox.zph(cox_step_lab)
+
+
+
+cox_step_lab %>%
+  tbl_regression(
+    exponentiate = TRUE,
+    label = list(
+      Sarcopenia ~ "Sarcopenia (baseline effect)",
+      BMI ~ "BMI",
+      `Age` ~ "Age",
+      `Visc. disease` ~ "Visceral Disease",
+      `DFI & De Novo` ~ "DFI / De novo",
+      `Met. Sites` ~ "Number of metastatic sites",
+      `1st line HR` ~ "1st line therapy"
+    )
+  ) %>%
+  modify_header(
+    estimate ~ "**HR**",
+    conf.low ~ "**95% CI (low)**",
+    conf.high ~ "**95% CI (high)**",
+    p.value ~ "**p-value**"
+  ) %>%
+  bold_labels() %>%
+  bold_p(t = 0.05) %>%
+  add_global_p() %>%
+  modify_caption(
+    "**Multivariable Cox model**"
+  ) %>% as_gt()
+
+
+
+```
+
+<br>
+
+```{r}
+#| fig-height: 7
+#| fig-width: 15
+#| echo: false
+#| warning: false
+#| message: false
+
+p <- survminer::ggforest(
+  cox_step_lab,
+  data = df_plot,
+  main = "Hazard Ratios for Overall Survival",
+  cpositions = c(0.005, 0.175, 0.404),
+  fontsize = 1.4
+) 
+
+
+ggsave(
+  "forest_os.svg",
+  plot = p,
+  width = 10.6,
+  height = 8.7,
+  units = "in"
+)
+
+
+
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(ggpattern)
+
+
+plot_d <- df_clean %>%
+    filter(!is.na(BMI_cat), !is.na(Sarcopenia)) %>%
+    mutate(
+        BMI_cat = factor(
+            BMI_cat,
+            levels = c("<18.5", "18.5-24.9", "25-29.9", ">=30")
+        ),
+        Sarcopenia = factor(
+            Sarcopenia,
+            levels = c(0, 1),
+            labels = c("No", "Yes")
+        )
+    ) %>%
+    count(BMI_cat, Sarcopenia, name = "n") %>%
+    group_by(BMI_cat) %>%
+    mutate(
+        total = sum(n),
+        pct = n / total,
+        label = paste0(
+            "<b>n = ", n, "</b><br>",
+            "<span style='font-size:19pt;'>", percent(pct, accuracy = 0.1), "</span>"
+        )
+    ) %>%
+    ungroup()
+
+
+
+p1 <- ggplot(
+    plot_d,
+    aes(
+        x = BMI_cat,
+        y = pct,
+        fill = Sarcopenia,
+        pattern = Sarcopenia
+    )
+) +
+    geom_col_pattern(
+        width = 0.72,
+        color = "black",
+        linewidth = 0.2,
+        pattern_fill = "black",
+        pattern_angle = 45,
+        pattern_density = 0.3,
+        pattern_spacing = 0.02,
+        pattern_key_scale_factor = 0.7
+    ) +
+    ggtext::geom_richtext(
+        aes(
+            y = pct,
+            label = label,
+            group = Sarcopenia
+        ),
+        position = position_stack(vjust = 0.5),
+        size = 7,
+        fill = "white",
+        label.color = "black",
+        label.size = 0.5,
+        label.padding = unit(c(0.4, 0.5, 0.4, 0.5), "lines"),
+        label.r = unit(0.08, "lines"),
+        lineheight = 1.0
+    ) +
+    scale_y_continuous(
+        labels = percent_format(accuracy = 1),
+        limits = c(0, 1),
+        expand = c(0, 0)
+    ) +
+    scale_fill_manual(
+        values = c(
+            "No" = "grey95",
+            "Yes" = "white"
+        )
+    ) +
+    scale_pattern_manual(
+        values = c(
+            "No" = "none",
+            "Yes" = "stripe"
+        )
+    ) +
+    labs(
+        x = "BMI-Category",
+        y = "Percentage",
+        fill = "Sarcopenia",
+        pattern = "Sarcopenia"
+    ) +
+    theme_pubr(base_size = 22) +
+    theme(
+        legend.position = "top",
+        panel.grid.major.x = element_blank(),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold")
+    )
+
+
+
+
+
+ggsave(
+  "bmi_dist.svg",
+  plot = p1,
+  width = 13,
+  height = 7,
+  units = "in"
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+s <- summary(cox_step_lab)
+
+# globale Tests extrahieren
+lr_p    <- signif(s$logtest["pvalue"], 3)
+wald_p  <- signif(s$waldtest["pvalue"], 3)
+score_p <- signif(s$sctest["pvalue"], 3)
+c_index <- round(s$concordance[1], 3)
+
+subtxt <- paste0(
+  "Global model tests: LR p = ", lr_p,
+  ", Wald p = ", wald_p,
+  ", Score p = ", score_p,
+  " | Concordance = ", c_index
+)
+
+#p1 <- p + labs(caption = subtxt) + theme(plot.caption = element_text(hjust = 0, size = 16))
+
+
+# p1 <- p +
+#   labs(
+#     subtitle = paste0(
+#       "Global model fit: LR p = ", lr_p,
+#       " | Wald p = ", wald_p,
+#       " | Score p = ", score_p,
+#       " | C-index = ", c_index
+#     )
+#   ) +
+#   theme(
+#     plot.subtitle = element_text(size = 14, hjust = 0, face = "italic")
+#   )
+
+
+```
+
+## Adjustierte Survival Kurve auf Cox modell
+
+```{r}
+#| fig-height: 7
+#| fig-width: 15
+#| echo: false
+#| warning: false
+#| message: false
+
+library(broom)
+
+
+cox_res <- broom::tidy(cox_step_lab, exponentiate = TRUE, conf.int = TRUE)
+sarc_row <- cox_res[cox_res$term == "SarcopeniaYes", ]
+
+hr  <- sarc_row$estimate
+lci <- sarc_row$conf.low
+uci <- sarc_row$conf.high
+pval <- sarc_row$p.value
+
+pval_txt <- ifelse(pval < 0.001, "<0.001", sprintf("%.3f", pval))
+
+# Beispiel: passe die Spaltennamen an deine med_os-Struktur an
+med_no     <- med_os$q[med_os$group == "No"]
+med_yes    <- med_os$q[med_os$group == "Yes"]
+med_no_l   <- med_os$ci_lower[med_os$group == "No"]
+med_no_u   <- med_os$ci_upper[med_os$group == "No"]
+med_yes_l  <- med_os$ci_lower[med_os$group == "Yes"]
+med_yes_u  <- med_os$ci_upper[med_os$group == "Yes"]
+
+fmt_med_ci <- function(m, lo, hi) {
+  if (is.na(m)) {
+    "not reached"
+  } else if (is.na(lo) || is.na(hi)) {
+    paste0(round(m, 2), " ")
+  } else {
+    paste0(
+      round(m, 2), " ",
+      "  (", round(lo, 2), "–", round(hi, 2), ")"
+    )
+  }
+}
+
+med_label <- paste0(
+  "<b>Median OS</b><br>",
+  "No: ", fmt_med_ci(med_no, med_no_l, med_no_u), "<br>",
+  "Yes: ", fmt_med_ci(med_yes, med_yes_l, med_yes_u), "<br><br>",
+  "HR: ", fmt_med_ci(hr, lci, uci), "<br>",
+  "p = ", pval_txt
+)
+
+
+# df_model <- as.data.frame(df_model)
+# 
+# 
+# df_plot_clean <- df_plot %>%
+#   rename(
+#     age_dx = `Age at first Diagnosis`,
+#     dfi_de_novo = `DFI & De Novo`,
+#     visceral_disease = `Visceral disease`,
+#     
+#     n_met_site = `Number of Metastatic Sites`,
+#     hr_line1 = `1st line HR`
+#   )
+# 
+# cox_step_lab2 <- coxph(
+#   Surv(OS_time, OS_event) ~ 
+#     Sarcopenia + 
+#     BMI +
+#     age_dx +
+#     brain_met + 
+#     dfi_de_novo + 
+#     n_met_sites + 
+#     hr_line1,
+#   data = df_plot_clean,
+#   model = TRUE,
+#   x = TRUE,
+#   y = TRUE
+# )
+
+
+p <- adjustedsurv(data = df_plot, 
+             variable = "Sarcopenia",
+             outcome_model = cox_step_lab,
+             conf_int = TRUE,
+             ev_time = "OS_time",
+             event = "OS_event", method = "direct")
+
+
+
+p1 <- plot(
+    p,
+    conf_int = TRUE,
+    xlab = "Time (in Months)",
+    ylab = "Overall Survival (in %)",
+    legend.title = "Sarcopenia",
+    median_surv_lines = TRUE
+) +
+    scale_y_continuous(
+        labels = scales::label_percent(accuracy = 1),
+        limits = c(0, 1)
+    ) +
+ggtext::geom_richtext(
+  aes(x = -5, y = 0.2, label = med_label),
+  hjust = 0,
+  fill = "white",
+  label.color = "black",
+  label.size = 0.3,
+  size = 7,
+  label.padding = unit(c(0.35, 0.5, 0.35, 0.5), "lines"),
+  color = "black"
+) +
+    theme_pubr(base_size = 22, legend = c(0.11, 0.64))+ 
+  theme(
+        panel.grid.major.x = element_blank(),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold")
+    )
+
+
+ggsave(
+  "adj_os.svg",
+  plot = p1,
+  width = 13,
+  height = 7,
+  units = "in"
+)
+```
+
+<br>
+
+Univariate Kurve:
+
+```{r}
+#| fig-height: 8
+#| fig-width: 10
+#| echo: false
+#| warning: false
+#| message: false
+
+
+p <- create_surv_plot(df_clean, fit = fit,
+                 risk.table = "nrisk_cumevents", 
+                 risk.table.y.text = FALSE, 
+                 risk.table.y.text.col = TRUE, 
+                 risk.table.col = "black", xscale = "m_y",
+                 show_tbls = c(median = TRUE, followup = TRUE, cox = FALSE),
+                 tbl1_pos = c(1, 0.8),
+                 tbl2_pos = c(1, 1.2),
+                 cox_tbl_pos = c(0.9, 0.75),
+                 pval.coord = c(48.5, 1.08),
+                 pval.size = 4,
+                 pval.method = T,
+                 pval.method.coord = c(48, 1.15),
+                 pval.method.size = 4,
+                 title = "Overall Survival - Patients with & without Sarcopenia")
+
+
+
+p1_plot <- p$plot 
+p2_plot <- p$table 
+
+
+design <- c(
+  patchwork::area(1, 1, 1, 1),
+  patchwork::area(2, 1, 2, 1)
+)
+
+
+final_plot <- p1_plot + p2_plot +
+  plot_layout(design = design,
+              heights = c(7, 1),
+              ncol = 2, widths = c(2, 2)) & 
+  theme(plot.margin = unit(c(0.6, 0.6, 0.6, 0.6), "cm"))
+
+final_plot
+
+
+
+
+
+```
+
+## PFS for ET + CDK4/6i (129 Pats)
+
+### Cox model without time varying effect
+
+<br>
+
+Global not significant !!! Therefore, careful with the interpretations of significant HR!
+
+<br>
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-height: 8
+#| fig-width: 10
+#| echo: false
+
+
+df_clean <- df_plot %>%
+  filter(`1st line HR` == "ET + CDK4/6i")
+
+surv <- Surv(time = df_clean$PFS_time, event = df_clean$PFS_event)
+fit_pfs <- survfit(surv ~ Sarcopenia, data = df_clean) 
+
+
+
+
+
+
+df_plot <- df_clean %>%
+  as.data.frame() %>%
+  mutate(
+    # Variablen mit sauberen Labels für den Plot
+    `Age at first Diagnosis` = Age,
+  
+  
+    Sarcopenia = factor(
+      Sarcopenia,
+      levels = c(0, 1),
+      labels = c("No", "Yes")
+    ),
+    
+    `DFI & De Novo` = factor(
+      DFI_combined,
+      levels = c("de_novo", "DFI_<=24", "DFI_>24"),
+      labels = c("De novo", "DFI <=24 months", "DFI >24 months")
+    ),
+     `Number of Metastatic Sites` = num_met_sites
+    # 
+    # `1st line HR` = firstline_hr
+  )
+
+
+
+
+cox_step_lab_pfs <- coxph(
+  Surv(PFS_time, PFS_event) ~ 
+    Sarcopenia + 
+    BMI_cat +
+    Age +
+    `Visc. disease` + 
+    `DFI & De Novo` +
+    `Met. Sites`, 
+  data = df_clean,
+  model = TRUE,
+  x = TRUE,
+  y = TRUE
+)
+
+
+
+# cox.zph(cox_step_lab_pfs)
+
+
+
+
+
+
+s <- summary(cox_step_lab_pfs)
+
+# globale Tests extrahieren
+lr_p    <- signif(s$logtest["pvalue"], 3)
+wald_p  <- signif(s$waldtest["pvalue"], 3)
+score_p <- signif(s$sctest["pvalue"], 3)
+c_index <- round(s$concordance[1], 3)
+
+subtxt <- paste0(
+  "Global model tests: LR p = ", lr_p,
+  ", Wald p = ", wald_p,
+  ", Score p = ", score_p,
+  " | Concordance = ", c_index
+)
+
+survminer::ggforest(
+  cox_step_lab_pfs,
+  data = df_plot,
+  main = "Hazard Ratios for Overall Survival",
+  cpositions = c(0.02, 0.22, 0.4),
+  fontsize = 1
+) 
+
+#p + labs(caption = subtxt) + theme(plot.caption = element_text(hjust = 0, size = 16))
+
+
+```
+
+<br>
+
+```{r}
+
+
+p <- adjustedsurv(data = df_clean, 
+             variable = "Sarcopenia",
+             outcome_model = cox_step_lab_pfs,
+             conf_int = TRUE,
+             ev_time = "PFS_time",
+             event = "PFS_event", method = "direct")
+
+
+plot(p, conf_int=TRUE,
+  xlab = "Time (in Months)", ylab = "Progression-Free Survival (in %)",
+  legend.title = "Sarcopenia") +
+  scale_y_continuous(
+    labels = scales::label_percent(accuracy = 1),
+    limits = c(0, 1)
+  ) +
+  theme_pubr()
+
+
+
+
+```
+
+<br>
+
+### Cox model with time-dependent effect for sarcopenia
+
+<br>
+
+Global significant
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
+df_clean <- df_clean %>%
+  mutate(
+    Sarcopenia = ifelse(Sarcopenia == "Yes", 1, 0)
+  )
+
+
+cox_time <- coxph(
+  Surv(PFS_time, PFS_event) ~ 
+    Sarcopenia +
+    tt(Sarcopenia) +
+    BMI +
+    `Age` +
+    `Visc. disease` +
+    `DFI & De Novo` +
+    `Met. Sites`,
+  data = df_clean,
+  tt = function(x, t, ...) x * log(t + 1)
+)
+
+
+
+
+cox_time %>% tbl_regression(exp = TRUE) %>% as_gt()
+
+tbl <- cox_time %>%
+  tbl_regression(
+    exponentiate = TRUE,
+    label = list(
+      Sarcopenia ~ "Sarcopenia (baseline effect)",
+      `tt(Sarcopenia)` ~ "Sarcopenia × log(1 + time)",
+      BMI ~ "BMI",
+      `Age` ~ "Age at first diagnosis",
+      `Visc. disease` ~ "Visceral disease",
+      `DFI & De Novo` ~ "DFI / De novo",
+      `Met. Sites` ~ "Number of metastatic sites"
+    )
+  ) %>%
+  modify_header(
+    estimate ~ "**HR**",
+    p.value ~ "**p-value**"
+  ) %>%
+  bold_labels() %>%
+  bold_p(t = 0.05) %>%
+  add_global_p() %>%
+  modify_caption(
+    "**Multivariable Cox model with time-dependent effect for sarcopenia**"
+  )
+
+
+
+```
+
+A time-dependent Cox model indicated a significant time-varying effect of sarcopenia (p = 0.020), with a stronger impact in early follow-up that decreased over time.
+
+<br>
+
+### HR plot for Sarcopenia
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
+b <- coef(cox_time)
+V <- vcov(cox_time)
+
+b1 <- b["Sarcopenia"]
+b2 <- b["tt(Sarcopenia)"]
+
+V11 <- V["Sarcopenia", "Sarcopenia"]
+V22 <- V["tt(Sarcopenia)", "tt(Sarcopenia)"]
+V12 <- V["Sarcopenia", "tt(Sarcopenia)"]
+
+
+time_df <- tibble(
+    time = seq(0, max(df_plot$PFS_time, na.rm = TRUE), length.out = 200),
+    logt = log1p(time)
+) %>%
+    mutate(
+        logHR = b1 + b2 * logt,
+        se_logHR = sqrt(V11 + logt^2 * V22 + 2 * logt * V12),
+        HR = exp(logHR),
+        lower = exp(logHR - 1.96 * se_logHR),
+        upper = exp(logHR + 1.96 * se_logHR)
+    )
+
+ggplot(time_df, aes(x = time, y = HR)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+    geom_line(linewidth = 0.9) +
+    geom_hline(yintercept = 1, linetype = 2) +
+    labs(
+        x = "Zeit",
+        y = "Hazard Ratio for Sarcopenia",
+        title = "Time-varying Effect of Sarcopenia on PFS"
+    ) + theme_pubr()
+
+
+```
+
+## Univariater Survival Plot
+
+```{r}
+#| fig-height: 8
+#| fig-width: 13
+#| echo: false
+#| warning: false
+#| message: false
+
+get_median_table <- function(fit, xscale = "m_y") {
+
+  xtrans <- get_xscale(xscale)
+
+
+  time_unit <- case_when(str_sub(xscale, -1) == "d" ~ "Days",
+                         str_sub(xscale, -1) == "m" ~ "Months",
+                         str_sub(xscale, -1) == "y" ~ "Years")
+
+
+  # summary object
+  tab <- summary(fit)$table
+
+
+  # Normalize to data.frame with rows = strata (or 1 row if unstratified)
+  if (is.null(dim(tab))) {
+    tab <- as.data.frame(t(tab))
+    rn  <- "Overall"
+  } else {
+    tab <- as.data.frame(tab)
+    rn  <- rownames(tab)
+  }
+  # Extract group labels from rownames like "group=Level"
+  grp <- sub("^.*?=", "", rn)
+  grp[grp == rn] <- rn  # handle "Overall" or already-clean names
+
+  # Compute & format median with CI; handle NR
+  med   <- tab[,"median"] * xtrans
+  lcl   <- tab[,"0.95LCL"] * xtrans
+  ucl   <- tab[,"0.95UCL"] * xtrans
+
+  fmt   <- ifelse(is.finite(med),
+                  sprintf("%.2f (%.2f–%.2f)", med, lcl, ucl),
+                  "NR")
+
+  out <- tibble::tibble(
+    `Group ` = grp,
+    Median = fmt
+  )
+
+  names(out)[2] <- paste0("Median Survival, \n", time_unit, " [95%-CI]")
+  out
+
+
+  # # Get values
+  # records <- tab["records"]
+  # events  <- tab["events"]
+  # median  <- round(tab["median"] * xtrans, 2)
+  # lcl     <- round(tab["0.95LCL"] * xtrans, 2)
+  # ucl     <- round(tab["0.95UCL"] * xtrans, 2)
+  #
+  # # Output
+  # data.frame(
+  #   Median_survival = paste0(median, "  [", lcl, "–", ucl, "]"),
+  #   check.names = FALSE  # prevents conversion of column name
+  # ) %>%
+  #   setNames(paste0("Median\n Survival, ", time_unit,"\n[95%-CI]"))
+}
+
+p <- create_surv_plot(
+  df_clean, fit = fit_pfs,
+  risk.table = FALSE,
+  #risk.table = "nrisk_cumevents", 
+  #risk.table.y.text = FALSE, 
+  #risk.table.y.text.col = TRUE, 
+  #risk.table.col = "black", 
+  xscale = "m_m",
+  show_tbls = c(median = FALSE, followup = FALSE, cox = FALSE),
+  tbl1_pos = c(1, 0.8),
+  tbl2_pos = c(1, 1.2),
+  pval.coord = c(45, 1.09),
+  pval.size = 7,
+  pval.method = TRUE,
+  pval.method.coord = c(45, 1.15),
+  pval.method.size = 7,
+  title_size = 18,
+  ylab = "Progression-Free Survival (in %)",
+  title = " "
+  #risk_table_size = 7,
+  
+)
+
+p$plot <- p$plot +
+  scale_color_discrete(name = "Sarcopenia") +
+  scale_fill_discrete(name = "Sarcopenia") +
+  guides(
+    fill = guide_legend(override.aes = list(linetype = 0)),
+    color = guide_legend()
+  ) +
+  theme_pubr(base_size = 22) +
+  theme(
+    axis.title = element_text(face = "bold"),
+    legend.position = c(0.1, 0.8),
+    legend.justification = c(0, 0),
+    legend.direction = "vertical",
+    legend.title = element_text(face = "bold"),
+    legend.background = element_rect(fill = "white", colour = "white")
+  )
+
+# Median-Tabelle holen
+med_tbl <- get_median_table(fit_pfs, xscale = "m_m")
+
+med_no <- med_tbl$`Median Survival, 
+Months [95%-CI]`[med_tbl$`Group ` == "No"]
+
+med_yes <- med_tbl$`Median Survival, 
+Months [95%-CI]`[med_tbl$`Group ` == "Yes"]
+
+fmt_med <- function(x) {
+  ifelse(length(x) == 0 || is.na(x) || x == "NR", "not reached", as.character(x))
+}
+
+# n und Events holen
+event_df <- df_clean %>%
+  group_by(Sarcopenia) %>%
+  summarise(
+    N = n(),
+    Events = sum(PFS_event == 1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+n_no <- event_df$N[event_df$Sarcopenia == "No"]
+e_no <- event_df$Events[event_df$Sarcopenia == "No"]
+
+n_yes <- event_df$N[event_df$Sarcopenia == "Yes"]
+e_yes <- event_df$Events[event_df$Sarcopenia == "Yes"]
+
+# Eine gemeinsame Textbox bauen
+info_label <- paste0(
+  "<b>Median PFS</b><br>",
+  "No: ", fmt_med(med_no), " | n = ", n_no, ", events = ", e_no, "<br>",
+  "Yes: ", fmt_med(med_yes), " | n = ", n_yes, ", events = ", e_yes
+)
+
+p$plot <- p$plot +
+  ggtext::geom_richtext(
+    aes(x = 45, y = 0.8, label = info_label),
+    inherit.aes = FALSE,
+    hjust = 0,
+    fill = "white",
+    color = "black",
+    label.color = "black",
+    label.size = 0.3,
+    label.padding = unit(c(0.35, 0.5, 0.35, 0.5), "lines"),
+    label.r = unit(0.12, "lines"),
+    size = 7
+  )
+
+p1_plot <- p$plot
+p2_plot <- p$table
+
+design <- c(
+  patchwork::area(1, 1, 1, 1),
+  patchwork::area(2, 1, 2, 1)
+)
+
+final_plot <- p1_plot + p2_plot +
+  plot_layout(
+    design = design,
+    heights = c(7, 1),
+    ncol = 2,
+    widths = c(2, 2)
+  ) &
+  theme(plot.margin = unit(c(0.6, 0.6, 0.6, 0.6), "cm"))
+
+final_plot
+
+ggsave(
+  "univ_pfs.svg",
+  plot = final_plot,
+  width = 13,
+  height = 8.5,
+  units = "in"
+)
+
+ggsave("univ_pfs.png", final_plot, dpi = 900, width = 13, height = 9)
+
+```
+
+```{r}
+
+df_os_bmi <- df_plot %>%
+  filter(BMI_cat == ">=30" | BMI_cat == "25-29.9")
+
+
+
+surv <- Surv(time = df_os_bmi$OS_time, event = df_os_bmi$OS_event)
+fit_pfs <- survfit(surv ~ Sarcopenia, data = df_os_bmi) 
+
+
+
+df_os_bmi <- df_os_bmi %>%
+  mutate(
+    Sarcopenia = ifelse(Sarcopenia == "Yes", 1, 0)
+  )
+
+
+cox_ <- coxph(
+  Surv(time = df_os_bmi$OS_time, event = df_os_bmi$OS_event) ~ 
+    Sarcopenia +
+    `Age` +
+    #`Visc. disease` +
+    `DFI & De Novo` +
+    `Met. Sites` +
+    `1st line HR` ,
+  data = df_os_bmi,
+  tt = function(x, t, ...) x * log(t + 1)
+)
+
+
+
+
+
+p <- create_surv_plot(
+  df_os_bmi, fit = fit_pfs,
+  risk.table = FALSE,
+  #risk.table = "nrisk_cumevents", 
+  #risk.table.y.text = FALSE, 
+  #risk.table.y.text.col = TRUE, 
+  #risk.table.col = "black", 
+  xscale = "m_m",
+  show_tbls = c(median = FALSE, followup = FALSE, cox = FALSE),
+  tbl1_pos = c(1, 0.8),
+  tbl2_pos = c(1, 1.2),
+  pval.coord = c(45, 1.09),
+  pval.size = 7,
+  pval.method = TRUE,
+  pval.method.coord = c(45, 1.15),
+  pval.method.size = 7,
+  title_size = 18,
+  ylab = "Overall Survival (in %)",
+  title = " "
+  #risk_table_size = 7,
+  
+)
+
+
+p$plot <- p$plot +
+  scale_color_discrete(name = "Sarcopenia") +
+  scale_fill_discrete(name = "Sarcopenia") +
+  guides(
+    fill = guide_legend(override.aes = list(linetype = 0)),
+    color = guide_legend()
+  ) +
+  theme_pubr(base_size = 22) +
+  theme(
+    axis.title = element_text(face = "bold"),
+    legend.position = c(0.1, 0.8),
+    legend.justification = c(0, 0),
+    legend.direction = "vertical",
+    legend.title = element_text(face = "bold"),
+    legend.background = element_rect(fill = "white", colour = "white")
+  )
+
+# Median-Tabelle holen
+med_tbl <- get_median_table(fit_pfs, xscale = "m_m")
+
+med_no <- med_tbl$`Median Survival, 
+Months [95%-CI]`[med_tbl$`Group ` == "No"]
+
+med_yes <- med_tbl$`Median Survival, 
+Months [95%-CI]`[med_tbl$`Group ` == "Yes"]
+
+fmt_med <- function(x) {
+  ifelse(length(x) == 0 || is.na(x) || x == "NR", "not reached", as.character(x))
+}
+
+# n und Events holen
+event_df <- df_os_bmi %>%
+  group_by(Sarcopenia) %>%
+  summarise(
+    N = n(),
+    Events = sum(OS_event == 1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+n_no <- event_df$N[event_df$Sarcopenia == "No"]
+e_no <- event_df$Events[event_df$Sarcopenia == "No"]
+
+n_yes <- event_df$N[event_df$Sarcopenia == "Yes"]
+e_yes <- event_df$Events[event_df$Sarcopenia == "Yes"]
+
+# Eine gemeinsame Textbox bauen
+info_label <- paste0(
+  "<b>Median OS</b><br>",
+  "No: ", fmt_med(med_no), " | n = ", n_no, ", events = ", e_no, "<br>",
+  "Yes: ", fmt_med(med_yes), " | n = ", n_yes, ", events = ", e_yes
+)
+
+p$plot <- p$plot +
+  ggtext::geom_richtext(
+    aes(x = 45, y = 0.90, label = info_label),
+    inherit.aes = FALSE,
+    hjust = 0,
+    fill = "white",
+    color = "black",
+    label.color = "black",
+    label.size = 0.3,
+    label.padding = unit(c(0.35, 0.5, 0.35, 0.5), "lines"),
+    label.r = unit(0.12, "lines"),
+    size = 7
+  )
+
+p1_plot <- p$plot
+p2_plot <- p$table
+
+design <- c(
+  patchwork::area(1, 1, 1, 1),
+  patchwork::area(2, 1, 2, 1)
+)
+
+final_plot <- p1_plot + p2_plot +
+  plot_layout(
+    design = design,
+    heights = c(7, 1),
+    ncol = 2,
+    widths = c(2, 2)
+  ) &
+  theme(plot.margin = unit(c(0.6, 0.6, 0.6, 0.6), "cm"))
+
+final_plot
+
+ggsave(
+  "univ_os_bmi.svg",
+  plot = final_plot,
+  width = 13,
+  height = 8.5,
+  units = "in"
+)
+
+
+```
